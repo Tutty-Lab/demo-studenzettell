@@ -9,7 +9,11 @@ import { maxConsecutiveRun } from "./consecutive";
 import { weekStartOf } from "./weeks";
 import { validPause } from "./staffing";
 import { mayWorkOn } from "./availability";
+import { publicHolidayNames } from "./holidays";
 import type { WorkHoursConfig } from "./workHours";
+import type { RuleId } from "./rules";
+import { minutesOutsidePreferred, ownShiftRangeMinutes, preferredWindowsOf } from "./preferredWindows";
+import { parseIsoDate, weekdayKeyOf } from "./demand";
 
 export type ValidationError = {
   employeeId?: string;
@@ -25,6 +29,8 @@ export type ValidationError = {
    * Zahl in der Mitarbeiterliste zu groß ist.
    */
   severity?: "error" | "warning";
+  /** Welche Regel (rules.ts) – entscheidet „Luật cứng" oder „Luật mềm" in der Anzeige. */
+  rule?: RuleId;
 };
 
 export type EmployeeSummary = {
@@ -47,7 +53,7 @@ export type ValidationResult = {
  * Arbeitszeitgesetzes (§ 3 ArbZG: bis zu 10 Stunden, wenn im Halbjahr auf 8
  * ausgeglichen).
  */
-const MAX_PAID_MINUTES = 9 * 60;
+const MAX_PAID_MINUTES = 8 * 60;
 const MAX_CONSECUTIVE_DAYS = 6;
 
 export function validateSchedule(
@@ -92,13 +98,13 @@ export function validateSchedule(
     const expectedPaid = presence - shift.pauseMinutes;
     const expectedPause = calculatePause(shift.paidMinutes);
     const employee = employeeById.get(shift.employeeId);
-    if (employee && !mayWorkOn(employee, shift.date)) errors.push({ employeeId: employee.id, date: shift.date,
+    if (employee && !mayWorkOn(employee, shift.date)) errors.push({ employeeId: employee.id, date: shift.date, rule: "days-off",
       message: `${employee.name}: đã xếp vào ngày không thể làm ${shift.date}.`,
     });
-    if (shift.pauseStartMinutes != null && !validPause(shift)) errors.push({ employeeId: shift.employeeId, date: shift.date,
+    if (shift.pauseStartMinutes != null && !validPause(shift)) errors.push({ employeeId: shift.employeeId, date: shift.date, rule: "shift-length",
       message: `Giờ nghỉ không hợp lệ ngày ${shift.date}.`,
     });
-    if (employee?.weeklyHours != null && shift.pauseMinutes > 0 && shift.pauseStartMinutes == null) errors.push({ employeeId: shift.employeeId, date: shift.date,
+    if (employee?.weeklyHours != null && shift.pauseMinutes > 0 && shift.pauseStartMinutes == null) errors.push({ employeeId: shift.employeeId, date: shift.date, rule: "shift-length",
       message: `Chưa xếp giờ bắt đầu nghỉ ngày ${shift.date}; cần giờ nghỉ cụ thể để kiểm tra đủ người.`,
     });
 
@@ -106,6 +112,7 @@ export function validateSchedule(
       errors.push({
         employeeId: shift.employeeId,
         date: shift.date,
+        rule: "shift-length",
         message: `Giờ ra không sau giờ vào (${shift.date}).`,
       });
     }
@@ -113,6 +120,7 @@ export function validateSchedule(
       errors.push({
         employeeId: shift.employeeId,
         date: shift.date,
+        rule: "shift-length",
         message: `Quá ${MAX_PAID_MINUTES / 60} giờ công ngày ${shift.date}.`,
       });
     }
@@ -120,6 +128,7 @@ export function validateSchedule(
       errors.push({
         employeeId: shift.employeeId,
         date: shift.date,
+        rule: "shift-length",
         message: `Giờ công không khớp giờ vào/ra/nghỉ ngày ${shift.date}.`,
       });
     }
@@ -127,6 +136,7 @@ export function validateSchedule(
       errors.push({
         employeeId: shift.employeeId,
         date: shift.date,
+        rule: "shift-length",
         message: `Sai giờ nghỉ ngày ${shift.date}: ${shift.pauseMinutes} thay vì ${expectedPause} phút.`,
       });
     }
@@ -153,7 +163,8 @@ export function validateSchedule(
         errors.push({
           employeeId: emp.id,
           date: shift.date,
-          message: `Có nhiều hơn một ca ngày ${shift.date}.`,
+          rule: "shift-length",
+        message: `Có nhiều hơn một ca ngày ${shift.date}.`,
         });
       }
       seenDates.add(shift.date);
@@ -162,7 +173,7 @@ export function validateSchedule(
     const assignedMinutes = empShifts.reduce((sum, s) => sum + s.paidMinutes, 0);
     for (const date of seenDates) {
       const paid = empShifts.filter((shift) => shift.date === date).reduce((sum, shift) => sum + shift.paidMinutes, 0);
-      if (paid > MAX_PAID_MINUTES) errors.push({ employeeId: emp.id, date,
+      if (paid > MAX_PAID_MINUTES) errors.push({ employeeId: emp.id, date, rule: "shift-length",
         message: `${emp.name}: tổng giờ công ngày ${date} vượt ${MAX_PAID_MINUTES / 60} giờ.`,
       });
     }
@@ -183,17 +194,60 @@ export function validateSchedule(
           errors.push({
             employeeId: emp.id,
             date: week,
+            rule: "contract-max",
             message: `${emp.name}: tuần ${week} xếp ${total.paid / 60}h, vượt hợp đồng ${emp.weeklyHours}h/tuần.`,
           });
         }
-        const maxDays = Math.min(6, emp.maxDaysPerWeek ?? 6);
-        if (total.dates.size > maxDays) {
+      }
+    }
+
+    // „Số ngày làm / tuần" gilt für jeden Vertrag, nicht nur für Wochenverträge.
+    if (emp.maxDaysPerWeek != null && emp.maxDaysPerWeek < 6) {
+      const datesByWeek = new Map<string, Set<string>>();
+      for (const shift of empShifts) {
+        const week = weekStartOf(shift.date);
+        datesByWeek.set(week, (datesByWeek.get(week) ?? new Set<string>()).add(shift.date));
+      }
+      for (const [week, dates] of datesByWeek) {
+        if (dates.size > emp.maxDaysPerWeek) {
           errors.push({
             employeeId: emp.id,
             date: week,
-            message: `${emp.name}: tuần ${week} làm ${total.dates.size} ngày, vượt giới hạn ${maxDays} ngày/tuần.`,
+            rule: "max-days",
+            message: `${emp.name}: tuần ${week} làm ${dates.size} ngày, vượt giới hạn ${emp.maxDaysPerWeek} ngày/tuần.`,
           });
         }
+      }
+    }
+
+    // Weiche Regeln je Person: nur melden, der Plan bleibt gültig.
+    const ownRange = ownShiftRangeMinutes(emp);
+    if (ownRange) {
+      const outside = [...seenDates].filter((date) => {
+        const paid = empShifts.filter((shift) => shift.date === date).reduce((sum, shift) => sum + shift.paidMinutes, 0);
+        return paid < ownRange.min || paid > ownRange.max;
+      });
+      if (outside.length > 0) {
+        errors.push({
+          employeeId: emp.id,
+          severity: "warning",
+          rule: "own-shift-length",
+          message: `${emp.name}: ${outside.length} ngày ngoài độ dài ca ${minutesToShortHours(ownRange.min)}–${minutesToShortHours(ownRange.max)} (${outside.map((d) => d.slice(8, 10) + "." + d.slice(5, 7)).join(", ")}).`,
+        });
+      }
+    }
+    const windows = preferredWindowsOf(emp);
+    if (windows.length > 0) {
+      const outsideShifts = empShifts.filter(
+        (shift) => minutesOutsidePreferred(windows, weekdayKeyOf(parseIsoDate(shift.date)), shift) > 0,
+      );
+      if (outsideShifts.length > 0) {
+        errors.push({
+          employeeId: emp.id,
+          severity: "warning",
+          rule: "preferred-windows",
+          message: `${emp.name}: ${outsideShifts.length}/${empShifts.length} ca ngoài khung giờ ưu tiên (${[...new Set(outsideShifts.map((s) => s.date.slice(8, 10) + "." + s.date.slice(5, 7)))].join(", ")}).`,
+        });
       }
     }
 
@@ -209,14 +263,16 @@ export function validateSchedule(
       errors.push({
         employeeId: emp.id,
         severity: zuWenig ? "warning" : "error",
+        rule: zuWenig ? "contract-hours" : "contract-max",
         message: zuWenig
-          ? `${emp.name}: mới xếp được ${minutesToShortHours(assignedMinutes)} / ${minutesToShortHours(soll)} — tháng này không đủ ngày cho định mức đó.`
+          ? `${emp.name}: thiếu ${minutesToShortHours(soll - assignedMinutes)} — mới xếp được ${minutesToShortHours(assignedMinutes)} / ${minutesToShortHours(soll)}.`
           : `${emp.name}: xếp quá giờ định mức: ${minutesToShortHours(assignedMinutes)} thay vì ${minutesToShortHours(soll)}.`,
       });
     }
     if (maxRun > MAX_CONSECUTIVE_DAYS) {
       errors.push({
         employeeId: emp.id,
+        rule: "max-days",
         message: `${emp.name}: làm quá 6 ngày liên tiếp (${maxRun}).`,
       });
     }
@@ -229,6 +285,27 @@ export function validateSchedule(
       maxConsecutiveDays: maxRun,
       shiftCount: empShifts.length,
     });
+  }
+
+  // Feiertagspflicht: wer requiredOnHolidays trägt, muss an jedem GEÖFFNETEN
+  // Feiertag im Dienst sein (Vorgabe des Betriebs). Ohne Datumsliste lässt
+  // sich nicht sagen, ob der Laden offen hat – dann wird nicht geprüft.
+  const openDateSet = Array.isArray(openDays) ? new Set(openDays) : null;
+  if (openDateSet) {
+    for (const [date, name] of publicHolidayNames(_year)) {
+      if (!openDateSet.has(date)) continue;
+      for (const emp of employees) {
+        if (!emp.requiredOnHolidays || !mayWorkOn(emp, date)) continue;
+        if (shifts.some((shift) => shift.employeeId === emp.id && shift.date === date)) continue;
+        errors.push({
+          employeeId: emp.id,
+          date,
+          severity: "warning",
+          rule: "holiday-duty",
+          message: `${emp.name}: ngày lễ ${date} (${name}) chưa có ca — quán yêu cầu phải có mặt.`,
+        });
+      }
+    }
   }
 
   // Warnungen machen den Plan nicht ungültig – sonst blockiert eine zu große

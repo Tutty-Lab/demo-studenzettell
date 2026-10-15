@@ -21,6 +21,7 @@
 import type { Employee } from "../types";
 import { DAY_WEIGHTS, parseIsoDate, weekdayKeyOf, type WeekdayKey } from "./demand";
 import { weekStartOf } from "./weeks";
+import { isEmployedOn } from "./availability";
 import { DEFAULT_WORK_HOURS, type WorkHoursConfig } from "./workHours";
 
 /** ISO "yyyy-MM-dd" + n Tage (UTC, ohne Zeitzonen-Verschiebung). */
@@ -33,7 +34,7 @@ function addDaysIso(isoDate: string, days: number): string {
 export const OPEN_DAYS_PER_WEEK = 6;
 export const SCHEDULE_SLOT_MINUTES = 30;
 /** Höchste bezahlte Zeit je Tag (§ 3 ArbZG, siehe validation.ts). */
-export const MAX_PAID_MINUTES_PER_DAY = 9 * 60;
+export const MAX_PAID_MINUTES_PER_DAY = 8 * 60;
 
 /** Extra opening days in a calendar week do not increase a weekly contract. */
 export function contractOpenDays(openDaysByWeek: readonly number[]): number {
@@ -76,7 +77,7 @@ function weekdayFactor(weekday: WeekdayKey, workHours: WorkHoursConfig): number 
  *
  * Normale Woche = Wochentage, die in mindestens zwei Wochen des Monats offen
  * sind (ein einmalig geöffneter Montag zählt nicht). Tage vor dem Eintritt
- * (startDate) fallen weg.
+ * (startDate) und nach dem Austritt (endDate) fallen weg.
  */
 export function weekSharesFor(
   emp: Employee,
@@ -96,7 +97,7 @@ export function weekSharesFor(
 
   const byWeek = new Map<string, { factor: number; days: number }>();
   for (const date of openDates) {
-    if (emp.startDate != null && date < emp.startDate) continue;
+    if (!isEmployedOn(emp, date)) continue;
     const week = weekStartOf(date);
     const entry = byWeek.get(week) ?? { factor: 0, days: 0 };
     entry.factor += weekdayFactor(weekdayKeyOf(parseIsoDate(date)), workHours);
@@ -125,12 +126,27 @@ function weekPartMinutes(weeklyMinutes: number, week: WeekShare): number {
  * eingetragenen targetMinutes. workHours = Wochenplan des Ladens (Standard:
  * Vorgabe), damit Anzeige, Prüfung und Scheduler dieselbe Zahl rechnen.
  */
+/**
+ * MONATSvertrag anteilig, wenn jemand mitten im Monat kommt oder geht: wer am
+ * 15. anfängt oder aufhört, schuldet in diesem Monat nur den Anteil der offenen
+ * Tage, an denen er beschäftigt ist. Auf die halbe Stunde gerundet, damit der
+ * Planer die Zahl exakt treffen kann.
+ */
+function proratedMonthly(emp: Employee, openDates: readonly string[]): number {
+  if (emp.startDate == null && emp.endDate == null) return emp.targetMinutes;
+  if (openDates.length === 0) return emp.targetMinutes;
+  const beschaeftigt = openDates.filter((date) => isEmployedOn(emp, date)).length;
+  if (beschaeftigt >= openDates.length) return emp.targetMinutes;
+  const anteil = (emp.targetMinutes * beschaeftigt) / openDates.length;
+  return Math.max(0, Math.round(anteil / SCHEDULE_SLOT_MINUTES) * SCHEDULE_SLOT_MINUTES);
+}
+
 export function monthlyTargetMinutesFor(
   emp: Employee,
   openDates: readonly string[],
   workHours: WorkHoursConfig = DEFAULT_WORK_HOURS,
 ): number {
-  if (emp.weeklyHours == null) return emp.targetMinutes;
+  if (emp.weeklyHours == null) return proratedMonthly(emp, openDates);
   const weekly = emp.weeklyHours * 60;
   return Math.max(0, Math.round(weekSharesFor(emp, openDates, workHours).reduce((sum, week) => sum + weekPartMinutes(weekly, week), 0)));
 }
@@ -235,14 +251,19 @@ export function weeklyTargetMinutes(
     return result;
   }
 
-  const raw = openDaysByWeek.map((w) => (monthlyMin * w.openDays) / totalOpen);
+  // Alles im 30-Minuten-Raster verteilen. Sonst bekommt jemand mit 40,2 h im
+  // Monat ein Wochenbudget von 101 Minuten, und der Plan zeigt krumme Zeiten
+  // wie 20:19–22:00. Der Rest unter einer halben Stunde bleibt ungeplant und
+  // liegt damit unter der Warnschwelle der Prüfung.
+  const totalSlots = Math.floor(monthlyMin / SCHEDULE_SLOT_MINUTES + 1e-9);
+  const raw = openDaysByWeek.map((w) => (totalSlots * w.openDays) / totalOpen);
   const floors = raw.map((x) => Math.floor(x));
-  let rest = Math.round(monthlyMin) - floors.reduce((a, b) => a + b, 0);
+  let rest = totalSlots - floors.reduce((a, b) => a + b, 0);
   const order = raw
     .map((x, i) => ({ i, frac: x - Math.floor(x) }))
-    .sort((a, b) => b.frac - a.frac);
-  const minutes = [...floors];
-  for (let k = 0; k < order.length && rest > 0; k++, rest--) minutes[order[k].i] += 1;
-  openDaysByWeek.forEach((w, i) => result.set(w.weekStart, minutes[i]));
+    .sort((a, b) => b.frac - a.frac || a.i - b.i);
+  const slots = [...floors];
+  for (let k = 0; k < order.length && rest > 0; k++, rest--) slots[order[k].i] += 1;
+  openDaysByWeek.forEach((w, i) => result.set(w.weekStart, slots[i] * SCHEDULE_SLOT_MINUTES));
   return result;
 }
