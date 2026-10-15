@@ -9,7 +9,7 @@
 // ============================================================================
 
 import type { Employee, Schedule } from "../types";
-import { makeEmployee } from "./sampleData";
+import { demoEmployees, makeEmployee } from "./sampleData";
 
 /** Thu Vân Nguyễn: Vollzeit im Coco, ab September 2026 zusätzlich Minijob 43 h im Nieu. */
 export const MIGRATION_THU_VAN_NIEU = "2026-10-thu-van-nieu";
@@ -51,13 +51,24 @@ function thuVanNieu(storeId: string, employees: Employee[]): Employee[] {
   return employees;
 }
 
+/**
+ * Kunden-Demo: die Zeile „demo" existiert schon (leer angelegt, bevor es
+ * Beispieldaten gab) – sampleEmployees greift dort nie mehr. Ist die Liste noch
+ * LEER, die 10 Demo-Personen einsetzen. Hat jemand schon Leute angelegt, bleibt
+ * alles unverändert.
+ */
+export const MIGRATION_DEMO_SEED = "2026-10-demo-seed-10";
+
 /** Wendet alle noch offenen Änderungen auf den Stand einer Filiale an. */
 export function applyMigrations(storeId: string, schedule: Schedule): Schedule {
-  const done = schedule.migrations ?? [];
-  if (done.includes(MIGRATION_THU_VAN_NIEU)) return schedule;
-  return {
-    ...schedule,
-    employees: thuVanNieu(storeId, schedule.employees),
-    migrations: [...done, MIGRATION_THU_VAN_NIEU],
-  };
+  let next = schedule;
+  const done = () => next.migrations ?? [];
+  if (!done().includes(MIGRATION_THU_VAN_NIEU)) {
+    next = { ...next, employees: thuVanNieu(storeId, next.employees), migrations: [...done(), MIGRATION_THU_VAN_NIEU] };
+  }
+  if (!done().includes(MIGRATION_DEMO_SEED)) {
+    const seed = storeId === "demo" && next.employees.length === 0;
+    next = { ...next, employees: seed ? demoEmployees() : next.employees, migrations: [...done(), MIGRATION_DEMO_SEED] };
+  }
+  return next;
 }

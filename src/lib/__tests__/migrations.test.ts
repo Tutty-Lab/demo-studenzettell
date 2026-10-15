@@ -5,8 +5,8 @@
 // ============================================================================
 
 import { describe, expect, it } from "vitest";
-import type { Schedule } from "../../types";
-import { applyMigrations, MIGRATION_THU_VAN_NIEU } from "../migrations";
+import type { Employee, Schedule } from "../../types";
+import { applyMigrations, MIGRATION_DEMO_SEED, MIGRATION_THU_VAN_NIEU } from "../migrations";
 import { makeEmployee } from "../sampleData";
 import { DEFAULT_WORK_HOURS } from "../workHours";
 
@@ -68,5 +68,34 @@ describe("Thu Vân: Coco + Nieu", () => {
   it("ändert im Shin nichts an der Belegschaft", () => {
     const shin = [makeEmployee("shin-2", "Quoc Tu Tran", "VOLLZEIT", 173)];
     expect(applyMigrations("shin", stand(shin)).employees).toEqual(shin);
+  });
+});
+
+describe("Demo: 10 nhân viên mẫu", () => {
+  const empty = (employees: Employee[] = []): Schedule => ({
+    companyName: "Demo Restaurant",
+    address: "",
+    year: 2026,
+    month: 10,
+    workHours: DEFAULT_WORK_HOURS,
+    dateOverrides: [],
+    employees,
+    shifts: [],
+    migrations: [],
+  });
+
+  it("điền 10 người khi quán demo chưa có ai", () => {
+    const out = applyMigrations("demo", empty());
+    expect(out.employees).toHaveLength(10);
+    expect(out.employees.filter((e) => e.station === "KITCHEN")).toHaveLength(4);
+    expect(out.migrations).toContain(MIGRATION_DEMO_SEED);
+  });
+
+  it("không đụng vào danh sách đã có người, và chỉ chạy một lần", () => {
+    const own = [{ id: "x", name: "X", employmentType: "VOLLZEIT" as const, targetMinutes: 600 }];
+    expect(applyMigrations("demo", empty(own)).employees).toEqual(own);
+    const once = applyMigrations("demo", empty());
+    const cleared = applyMigrations("demo", { ...once, employees: [] });
+    expect(cleared.employees).toEqual([]);
   });
 });

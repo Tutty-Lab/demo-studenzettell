@@ -5,7 +5,7 @@
 // 15 Monate umgelegt). Coco: 173, 173, 173, 156, 130, 152, 39 und 43 Stunden.
 // ============================================================================
 
-import type { Employee, Schedule } from "../types";
+import type { Employee, Schedule, Station } from "../types";
 import { DEFAULT_WORK_HOURS } from "./workHours";
 
 export function makeEmployee(
@@ -25,6 +25,26 @@ export function makeWeekly(
   weeklyHours: number,
 ): Employee {
   return { id, name, employmentType, targetMinutes: 0, weeklyHours };
+}
+
+/**
+ * Kunden-Demo („Demo Restaurant"): 10 erfundene Personen – 5 Vollzeit, 3 Teilzeit,
+ * 2 Minijob, 6 Bồi und 4 Bếp (1.196 h im Monat).
+ */
+export function demoEmployees(): Employee[] {
+  const rows: [string, Employee["employmentType"], number, Station][] = [
+    ["Van Hung Nguyen", "VOLLZEIT", 173, "SERVICE"],
+    ["Thi Lan Tran", "VOLLZEIT", 169, "KITCHEN"],
+    ["Minh Anh Le", "VOLLZEIT", 160, "SERVICE"],
+    ["Quang Huy Pham", "VOLLZEIT", 165, "KITCHEN"],
+    ["Thi Hoa Pham", "VOLLZEIT", 170, "SERVICE"],
+    ["Thu Trang Do", "TEILZEIT", 100, "SERVICE"],
+    ["Duc Long Hoang", "TEILZEIT", 86, "KITCHEN"],
+    ["Ngoc Mai Bui", "TEILZEIT", 90, "SERVICE"],
+    ["Thanh Tung Vu", "MINIJOB", 40, "KITCHEN"],
+    ["Mai Linh Vo", "MINIJOB", 43, "SERVICE"],
+  ];
+  return rows.map(([name, type, hours, station], i) => ({ ...makeEmployee(`demo-${i + 1}`, name, type, hours), station }));
 }
 
 /**

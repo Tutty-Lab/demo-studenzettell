@@ -12,6 +12,7 @@ import type { Employee, Schedule } from "../types";
 import { DAY_WEIGHTS, type WeekdayKey } from "./demand";
 import { STAFFING_RULES, type StaffingRule } from "./staffing";
 import { DEFAULT_WORK_HOURS } from "./workHours";
+import { demoEmployees } from "./sampleData";
 
 export type StoreConfig = {
   /** Schlüssel der Zeile in store_data – nach dem Anlegen NICHT mehr ändern. */
@@ -35,7 +36,7 @@ export const STORES: StoreConfig[] = [
     name: "Demo Restaurant",
     shortName: "Demo",
     address: "Musterstraße 1, 70173 Stuttgart",
-    sampleEmployees: () => [],
+    sampleEmployees: demoEmployees,
     dayWeights: DAY_WEIGHTS,
     staffingRules: STAFFING_RULES,
   },
